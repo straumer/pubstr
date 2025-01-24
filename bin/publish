@@ -1,11 +1,11 @@
 #!/bin/sh
 
 sep=$'\n'
-mkdir -p public
-event_paths=$(find articles -type f -name "*.json")
-for ws in $(cat outbox); do
+mkdir -p outbox/responses
+event_paths=$(find events -type f -name "*.json")
+for ws in $(cat outbox/relays); do
     domain=$(echo "$ws" | cut -d '/' -f 3)
-    ws_path="public/$domain"
+    ws_path="outbox/responses/$domain"
     events=""
     event_count=0
     first=""

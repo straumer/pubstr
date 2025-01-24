@@ -1,0 +1,14 @@
+#!/bin/sh
+
+SEC=$1
+if [ -z "$SEC" ]; then
+    echo "Arg 1 needs to be a hex sec key."
+    exit 1
+fi
+SCRIPT=$2
+if ! ([ -f "$SCRIPT" ] && [ -x "$SCRIPT" ]); then
+    echo "Arg 2 needs to be an executable."
+    exit 1
+fi
+
+exec "$SCRIPT" "$SEC"

@@ -1,0 +1,3 @@
+#!/bin/sh
+
+find events -type f -name "*.json" | sed q | xargs cat | jq -r '.[1].pubkey'

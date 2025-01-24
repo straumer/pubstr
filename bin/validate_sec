@@ -1,0 +1,3 @@
+#!/bin/sh
+
+[ -n "$(echo "$1" | sed -n '/^[0-9a-f]\{64\}$/{p;q}')" ] && echo t || echo f
