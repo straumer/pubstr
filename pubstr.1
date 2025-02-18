@@ -1,0 +1,248 @@
+.Dd 2025-02-09
+.Dt PUBSTR 1
+.Os
+.Sh NAME
+.Nm pubstr
+.Nd publish stuff to relays
+.Sh SYNOPSIS
+.Nm pubstr
+.Op COMMAND
+.Op OPTIONS...
+.Op ARGS...
+.Sh DESCRIPTION
+.Nm pubstr
+makes it easy to create, manage and publish arbitrary Nostr events for a given Nostr account. It can be initialized for an account via 
+.Nm pubstr init 
+which creates a 
+.Pa .pubstr
+directory containing plain text configuration and state files. For the rest of the commands
+.Nm pubstr 
+will use the first 
+.Pa .pubstr 
+directory it finds from its current directory and then up the directory tree, similar to programs like 
+.Nm git.
+.Sh COMMANDS
+.Nm init
+.Op hex-sec-key | command
+.Op servers...
+.Bd -filled -offset indent -compact
+Initializes
+.Nm pubstr
+in the current directory for the Nostr account associated with
+.Pa hex-sec-key
+or the standard output of
+.Pa command
+which is a hex-encoded private key. If omitted, a new
+.Pa hex-sec-key
+is generated. Each
+.Pa server
+can be either a websocket url if it is a relay or an http(s) url if it is a media server. They will be the default servers to use for the
+.Nm publish
+and
+.Nm upload
+commands respectively. If omitted, a popular
+.Pa server
+list is used. See the \fIFILES\fP section for modifying the produced configuration.
+.Ed
+.Pp
+.Nm event
+.Op - | executable-files...
+.Bd -filled -offset indent -compact
+Run each 
+.Pa executable-file
+with the current account's 
+.Pa hex-sec-key
+as an argument and write its standard output to
+.Pa file.json
+with any
+.Pa .sh
+suffix removed. This should be a Nostr EVENT message. If there are no
+.Pa executable-file
+arguments and optionally -, the files are instead read from standard input.
+.Ed
+.Pp
+.Nm publish
+.Op -t ws-servers...
+.Op - | json-files...
+.Bd -filled -offset indent -compact
+Sends Nostr EVENT messages in
+.Pa json-files
+to the default outbox relays. Different outbox relays can be specified with the
+.Fl t
+option in websocket url format. If no files or - are used, the files are read from standard input. For each file, the outbox relay and its reply are shown on standard output. Publishing the same file to a specific outbox relay more than once will not send the event and no reply shown.
+.Ed
+.Pp
+.Nm upload
+.Op -t http-servers...
+.Op - | media-files...
+.Bd -filled -offset indent -compact
+Uploads media files to the default NIP-96 media servers and displays the resulting file urls on standard output. To use different servers, use the
+.Fl t
+option to specify them in http(s) format. If no files or - are used, the files are read from standard input. If a file has already been uploaded to a server, the file is not reuploaded and the file url is shown again on standard output.
+.Ed
+.Pp
+.Nm help | -h | -help
+.Bd -filled -offset indent -compact
+Display command usage.
+.Ed
+.Sh FILES
+These files are relative to the directory where the
+.Nm init
+command was run.
+.Pp
+.Pa .pubstr 
+.Bd -filled -offset indent -compact
+Configuration and data directory created by the
+.Nm init
+command.
+.Ed
+.Pp
+.Pa .pubstr/config 
+.Bd -filled -offset indent -compact
+Configuration variables and commands that are sourced on each run. It is created by the 
+.Nm init
+command. It is meant to be manually modifiable.
+.Ed
+.Pp
+.Pa .pubstr/events
+.Bd -filled -offset indent -compact
+A directory for configuration files created by the
+.Nm init
+and
+.Nm event
+commands. They can be safely modified with the 
+.Nm event
+command. They are local, but can be explicitly published to relays as desired. They can also be fetched from relays if for example another Nostr app should manage them.
+.Ed
+.Pp
+.Pa .pubstr/events/relays.json
+.Bd -filled -offset indent -compact
+An event file that contains the default outbox relays to use.
+.Ed
+.Pp
+.Pa .pubstr/events/media_servers.json
+.Bd -filled -offset indent -compact
+An event file that contains the default media servers to use.
+.Ed
+.Pp
+.Pa .pubstr/outbox
+.Bd -filled -offset indent -compact
+A directory that holds relay files, named as the domain/IP and port of the relay. The
+.Nm publish
+command creates and appends successful relay replies to the corresponding relay file.
+.Ed
+.Pp
+.Pa .pubstr/media
+.Bd -filled -offset indent -compact
+A directory that holds media server files (except api_urls), named as the domain/IP and port of the media server. The
+.Nm upload
+command creates and appends successful media server replies to the corresponding media server file.
+.Ed
+.Pp
+.Pa .pubstr/media/api_urls
+.Bd -filled -offset indent -compact
+A file that is created by the
+.Nm upload
+command. It contains the NIP-96 api_url of each media server.
+.Ed
+.Sh EXIT STATUS
+The 
+.Nm pubstr
+utility exits 0 on success, and >0 if an error occurs.
+.Sh EXAMPLES
+Initialize a new Nostr account
+.Bd -literal -offset indent -compact
+.Nm $ pubstr init
+Account for pubkey 40f3..b90a initialized in /home/matt/pub/.pubstr
+.Ed
+.Pp
+Initialize an existing Nostr account with
+.Nm pass
+.Bd -literal -offset indent -compact
+.Nm $ pubstr init 'pass show nostr/sec'
+Account for pubkey 40f3..b90a initialized in /home/matt/pub/.pubstr
+.Ed
+.Pp
+Initialize an existing test Nostr account
+.Bd -literal -offset indent -compact
+.Nm $ pubstr init 909d9bc5d04d4dfc9b2be2a1eb6962a796efe8a7fe6f1e02ece44431d79df79e
+Account for pubkey 40f3..b90a initialized in /home/matt/pub/.pubstr
+.Ed
+.Pp
+Initialize an existing Nostr account with
+.Nm pass
+and specify servers
+.Bd -literal -offset indent -compact
+.Nm $ pubstr init 'pass show nostr/sec' wss://nos.lol https://nostrcheck.me
+Account for pubkey 40f3..b90a initialized in /home/matt/pub/.pubstr
+.Ed
+.Pp
+Write an executable
+.Pa my_event.sh
+that outputs a Nostr event message
+.Bd -literal -offset indent
+#!/bin/sh
+
+nostril --sec "$1"\\
+        --envelope\\
+        --content "hello world"
+.Ed
+.Pp
+Make Nostr event message
+.Bd -literal -offset indent -compact
+.Nm $ pubstr event my_event.sh
+my_event.json
+.Ed
+.Pp
+Publish event to a local relay
+.Bd -literal -offset indent -compact
+.Nm $ pubstr publish -t ws://localhost:8080 my_event.json
+localhost:8080: ["OK","7b8491662e53a2c8a43984a3be6bdf252487c2692f3ce66f742f55999ef5d159",true,""]
+.Ed
+.Pp
+Publish event to default relays
+.Bd -literal -offset indent -compact
+.Nm $ pubstr publish my_event.json
+nos.lol: ["OK","7b8491662e53a2c8a43984a3be6bdf252487c2692f3ce66f742f55999ef5d159",true,""]
+.Ed
+.Pp
+Upload image to a local media server
+.Bd -literal -offset indent -compact
+.Nm $ pubstr upload -t http://localhost:3000 my_pic.jpg
+http://localhost:3000/api/v2/media/5c5884d4a88a4f59352da01996fed7e49fbcdb1defe1b14df87def32413a081f.jpeg
+.Ed
+.Pp
+Upload image to a default media servers
+.Bd -literal -offset indent -compact
+.Nm pubstr upload my_pic.jpg
+https://nostrcheck.me/api/v2/media/5c5884d4a88a4f59352da01996fed7e49fbcdb1defe1b14df87def32413a081f.jpeg
+.Ed
+.Pp
+Make and publish many events at once to a local relay
+.Bd -literal -offset indent -compact
+.Nm $ find events -name '*.sh' | pubstr event | pubstr publish -t ws://localhost:8080
+localhost:8080: ["OK","fedd38fc048218b455a9e3f0b1168fdcf298a6251ac3b9616e638768291e6ad4",true,""]
+localhost:8080: ["OK","907be32c25d0862c51609aeb3fb0a58c75fc029a9e32c46b7e9296fa562da4c4",true,""]
+.Ed
+.Sh SEE ALSO
+.Rs
+.Nm nostril
+https://github.com/jb55/nostril
+.Re
+.Sh STANDARDS
+This script adheres to
+.St -p1003.1-2008
+with the exception of the
+.Nm curl,
+.Nm jq,
+.Nm nostril
+and
+.Nm websocat
+commands that are required to run it.
+.Sh AUTHORS
+.Nm pubstr 
+was written by 
+.An Matthias Ragnarsson 
+.Aq matt@netveldi.com
+and the code repository can be found at
+.Aq https://github.com/straumer/pubstr \.

@@ -1,85 +1,61 @@
-# Pubstr
+# pubstr
 
-Pubstr (Publish Stuff Through Relays) is a combination of shell scripts and a makefile to generate and publish nostr events under an existing hex-encoded private key.
+pubstr (publish stuff to relays) makes it easy to create, manage and publish arbitrary Nostr events for a given Nostr account, the unix way.
 
 ## Requirements
 
-It should be mostly POSIX compliant except for these CLI tools:
+It should be POSIX compliant aside for these required tools:
 
-- GNU Make
-- nostril
+- curl
 - jq
+- [nostril](https://github.com/jb55/nostril)
 - websocat
 
-To convert a nostr `nsec` key to its needed hex-encoded private key you can use something like:
+Optional, but complementary tools:
 
-- key-convertr
+- [key-convertr](https://github.com/rot13maxi/key-convertr) to conveniently convert a Nostr `nsec` key to its needed hex-encoded private key.
+- [pass](https://www.passwordstore.org/) to keep the private key encrypted at rest.
 
-## Usage
+## Installation
 
-### Get hex sec key
-
-First we need a hex sec key which can be obtained from an existing `nsec` key for example like so:
-
+Run, probably with sudo:
 ```
-key-convertr --to-hex <nsec key>
+make install
 ```
+## Quickstart
 
-A new one can also be obtained from the first line of `nostril --content ""`, but most people will want to obtain the `nsec` from some nostr app or keystore since pubstr is only for publishing, not for viewing events. 
-
-Next create an executable `sec.sh` script in the repository root and make it output the obtained hex sec key when run. A password manager like [pass](https://www.passwordstore.org/) can be used to avoid storing the key in plaintext. An example script with `pass` could look like:
-
+Assuming you have an `nsec` key for your Nostr account and want to use `pass` to keep it encrypted at rest. Run:
 ```
-#!/bin/sh
-
-pass show nostr/test
+key-convertr --to-hex <your-nsec>
+pass insert nostr/yourkey # Paste the resulting key at the prompt
 ```
 
-### Generate events
+Then change to a directory where you'll keep your Nostr events and media files. Initialize pubstr here for your Nostr account with default outbox relays and media servers of your liking:
+```
+pubstr init 'pass show nostr/yourkey' wss://nostr.oxtr.dev wss://nos.lol https://nostrcheck.me
+```
 
-To generate the events from files in the `events` directory, simply run `make` and the events will appear in `.json` suffixed files. The file's format and type of event that is generated depends on the file suffix as follows.
+Now everywhere in this directory and subdirectories, pubstr will use the initialized Nostr account, similar to `git`. Organize your subdirectories and files here however you like. Let's make the first Nostr note:
+```
+mkdir -p events/notes
+cd events/notes
+```
 
-#### General events
-
-Executable files with the `.sh` suffix take a hex sec key as an argument and write the desired enveloped event to standard output when run. A simple example:
-
+Write a new Nostr note file `hello_world.sh`:
 ```
 #!/bin/sh
 
 nostril --sec "$1"\
-    --envelope\
-    --content "hello there"
+        --envelope\
+        --content "hello world"
 ```
 
-#### Long-form events
-
-Files suffixed with `.md` are markdown formatted long-form content. They also set some variables via shell code before the `^^^` marker that will be evaluated. For example:
-
+Then make it executable and create and publish it to your relays:
 ```
-PUBLISHED=$(date -d 2024-04-08 +%s)
-CREATED=$(date -d 2024-04-24 +%s)
-TITLE="My Great Article"
-SUMMARY="This is some summary."
-^^^
-Lam odit recusandae voluptas et aliquam sit illo. Aliquam itaque quaerat fuga. Ratione dignissimos quo aut ut debitis. Eius porro sed explicabo. Fuga dolor hic nostrum quia et veniam. Neque dolorum rerum ea.
-
-# Section
-
-Qui dolores maxime nobis. Et consectetur nihil assumenda et veniam nulla. Facilis excepturi quia minima nisi enim dolorum.
+chmod +x hello_world.sh
+pubstr event hello_world.sh | pubstr publish
 ```
 
-The `d` identifier tag is by default the file name minus the `.md` suffix, but can be set via the `ID` variable above `^^^`.
+The Nostr EVENT message that was sent to the relays is stored in `hello_world.json`.
 
-An article in multiple languages can be made in a directory that contains an `eval` file. The `eval` file is evaluated and sets common variables among each language version. Each language version is named `<lang>.md` within the same directory with `<lang>` being an `ISO-639-1` language, for example `en.md`, `es.md` etc. The `ID` variable needs to be set explicitly in each of those language files and the directory name should be unique since it is used for the `lg` tag of the generated events to form a link between the events that could be used for grouping purposes in apps, but isn't yet.
-
-### Publish events
-
-Add a seed websocket relay url in the `outbox/relays_seed` file. It should be a nostr relay where the follow list of your account is located, for example `wss://nos.lol`. Other write/outbox relays are derived from it via the "gossip model" (for now) and then listed in the `outbox/relays` file. To publish the events, simply run:
-
-```
-make publish
-```
-
-It only publishes a given event if either the event changed or there is a new relay to which the event hasn't been published.
-
-If your write/outbox relays change, just modify `outbox/relays` and `outbox/relays_seed` as needed and run `make publish` again. The same event will only be sent one time to a relay and never again as long as the `outbox/replies` directory, which contains replies for each relay domain, is left untouched.
+For more documentation, check out `pubstr help` and `man pubstr`.

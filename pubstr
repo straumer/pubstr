@@ -1,0 +1,344 @@
+#!/bin/sh
+
+# Ensure prerequisite utilities
+UTIL_MSG="utility missing and must be installed"
+MISSING=""
+[ -z "$(jq --version 2> /dev/null)" ] && echo "jq $UTIL_MSG" >&2 && MISSING='y'
+[ -z "$(nostril 2> /dev/null)" ] && echo "nostril $UTIL_MSG" >&2 && MISSING='y'
+[ -z "$(websocat -V 2> /dev/null)" ] && echo "websocat $UTIL_MSG" >&2 && MISSING='y'
+[ -z "$(curl -V 2> /dev/null)" ] && echo "curl $UTIL_MSG" >&2 && MISSING='y'
+[ -n "$MISSING" ] && exit 1
+
+ROOT_DIR=$(pwd)
+CONFIG_DIR="$ROOT_DIR/.pubstr"
+
+die() {
+	echo "$@" >&2
+	exit 1
+}
+
+config() {
+	while [ ! -d "$CONFIG_DIR" ]; do
+		ROOT_DIR=$(dirname $ROOT_DIR)
+		[ "$ROOT_DIR" = "/" ] && die "Error: CONFIG_DIR does not exist. Run pubstr init to create a new one."
+		CONFIG_DIR="$ROOT_DIR/.pubstr"
+	done
+	. "$CONFIG_DIR/config"
+	RELAYS="$(jq -r '.[1].tags | map(select(.[0] == "r")).[][1]' "$CONFIG_DIR/events/relays.json" 2> /dev/null)"
+	MEDIA_SERVERS="$(jq -r '.[1].tags | map(select(.[0] == "server")).[][1]' "$CONFIG_DIR/events/media_servers.json" 2> /dev/null)"
+}
+
+valid_hex_key() {
+	[ -n "$(echo "$1" | sed -n '/^[0-9a-f]\{64\}$/{p;q}')" ]
+}
+
+valid_ws_url() {
+	echo "$1" | grep -E -q '^ws(s)?://[a-z0-9.-]+(:[0-9]{1,5})?(/)?$'
+}
+
+valid_http_url() {
+	echo "$1" | grep -E -q '^http(s)?://[a-z0-9.-]+(:[0-9]{1,5})?.*'
+}
+
+valid_url() {
+	valid_ws_url "$1" || valid_http_url "$1"
+}
+
+set_sec() {
+	local LSEC="${1:-$SEC}"
+	if ! valid_hex_key "$LSEC"; then
+		LSEC="$(eval "$LSEC" 2> /dev/null)"
+		if ! valid_hex_key "$LSEC"; then
+			die "Error: SEC value or command did not yield a valid hex key."
+		fi
+	fi
+	SEC="$LSEC"
+}
+
+event() {
+	if [ -f "$1" ] && [ -x "$1" ]; then
+		local dir=$(dirname $1)
+		cd $dir
+		local input_file=$(basename $1)
+		local output_file="${input_file%.sh}.json"
+		./$input_file "$SEC" > "$output_file" && echo "${1%.sh}.json"
+		cd - > /dev/null
+	else
+		echo "Error: $1 should be an existing, executable file." >&2
+	fi
+}
+	
+resp_url() {
+	local EXT=".$(echo "$2" | jq -r '.nip94_event.tags | map(select(.[0] == "url"))[0][1]' | sed -n 's/^.*\.//;/^[0-9a-z]*$/p')"
+	if [ "$EXT" = "." ]; then
+		EXT=".$(echo "$2" | jq -r '.nip94_event.tags | map(select(.[0] == "m"))[0][1]' | cut -d '/' -f 2)"
+	fi
+	echo "${1%/}/$SHA${EXT%.}"
+}
+
+upload() {
+	if [ ! -f "$1" ]; then
+		echo "Error: $1 does not exist." >&2
+		return 1
+	fi
+	local SEC_SET=""
+	local API_URLS_FILE="$CONFIG_DIR/media/api_urls"
+	for SERVER in $MEDIA_SERVERS; do
+
+		if ! valid_http_url "$SERVER"; then
+			echo "Error: $SERVER is not a valid media server." >&2
+			continue
+		fi
+		
+		DOMAIN="$(echo "$SERVER" | cut -d '/' -f 3)"
+		
+		# Find out the api_url to upload to.
+		[ -f "$API_URLS_FILE" ] && API_URL="$(grep "^$SERVER" "$API_URLS_FILE")"
+		if [ -z "$API_URL" ]; then
+			if echo "$SERVER" | grep -q '://\(localhost\|127\.0\.0\.1\):'; then
+				SERVER_CONFIG_URL="$SERVER/api/v2/nip96" # Assuming nostrcheck dev server.
+			else
+				SERVER_CONFIG_URL="$SERVER/.well-known/nostr/nip96.json"
+			fi
+			API_URL="$(curl -s -S "$SERVER_CONFIG_URL" | jq -r '.api_url' | sed "/http\(s\|\):\/\/localhost\//s/http\(s\|\):\/\/localhost/http:\/\/$DOMAIN/")"
+			if valid_http_url "$API_URL"; then
+				echo "$API_URL" >> "$API_URLS_FILE"
+			else
+				echo "Error: $SERVER_CONFIG_URL did not yield a valid api_url: $API_URL" >&2
+				continue
+			fi
+		fi
+		
+		SHA="$(sha256sum "$1" | cut -d ' ' -f 1 )"
+		SERVER_FILE="$CONFIG_DIR/media/$DOMAIN"
+	
+		# Return same old url if response exists already.
+		if [ -f "$SERVER_FILE" ]; then
+			OLD_RESPONSE="$(sed -n "/$SHA/{p;q}" $SERVER_FILE)"
+			if [ -n "$OLD_RESPONSE" ]; then
+				resp_url "$API_URL" "$OLD_RESPONSE"
+				continue
+			fi
+		fi
+
+		# Upload file to server's api_url, store response and show new url.
+		[ -z "$SEC_SET" ] && set_sec && SEC_SET="y"
+		AUTH="$(nostril --sec "$SEC" --kind 27235 --tag u "$API_URL" --tag method POST --tag payload "$SHA" | base64 -w 0)"
+		NEW_RESPONSE="$(curl -s -S -H "Authorization: Nostr $AUTH" -F file=@$1 -F no_transform=true "$API_URL")"
+		STAT="$(echo "$NEW_RESPONSE" | jq -r '.status' 2> /dev/null)"
+		if [ "$STAT" = "success" ]; then
+			echo "$NEW_RESPONSE" >> "$SERVER_FILE"
+			resp_url "$API_URL" "$NEW_RESPONSE"
+		else
+			echo "Unsuccessful response from $API_URL upload endpoint: $NEW_RESPONSE" >&2
+		fi
+	done
+}
+
+cmd_usage() {
+	cat <<-_EOF
+	===================================
+	= pubstr: publish stuff to relays =
+	===================================
+
+	Usage:
+	    pubstr init [hex-sec-key | command] [servers...]
+	        Initializes pubstr for nostr account in the current directory.
+	    pubstr event [- | executable-files...]
+	        Generate EVENT messages in json-files by running corresponding executable-files.
+	    pubstr publish [-t ws-servers...] [- | json-files...]
+	        Send EVENT messages in json-files to default outbox relays or those specified
+	        by ws-servers if the -t flag is used.
+	    pubstr upload [-t http-servers...] [- | media-files...]
+	        Send media-files to default media servers or http-servers if the -t flag is used.
+	    pubstr [help | -h | -help]
+	        Display command usage.
+
+	_EOF
+}
+
+cmd_init() {
+	if [ -d "$CONFIG_DIR" ]; then
+		die "Error: CONFIG_DIR $CONFIG_DIR already exists."
+	fi
+	if [ -z "$1" ] || valid_url "$1"; then
+		NOUT="$(nostril --content "" 2>&1)"
+		set_sec "$(echo "$NOUT" | sed q | cut -f 2 -d ' ')"
+		SEC_OR_CMD="$SEC"
+		PUB="$(echo "$NOUT" | sed -n '3{p;q}' | jq -r '.pubkey')"
+	else
+		set_sec "$1"
+		SEC_OR_CMD="$1"
+		PUB="$(nostril --sec "$SEC" | jq -r '.pubkey')"
+		shift
+	fi
+	if ! valid_hex_key "$PUB"; then
+		die "Error: Could not yield a valid hex key for PUB variable."
+	fi
+	mkdir -p "$CONFIG_DIR/outbox" "$CONFIG_DIR/media"
+	TAG_PREFIX=$'\n'"        "
+	for URL; do
+		if valid_ws_url "$URL"; then
+			RELAY_TAGS="$RELAY_TAGS${RELAY_TAGS:+$TAG_PREFIX}--tag r $URL\\"
+		elif valid_http_url "$URL"; then
+			MEDIA_URL_TAGS="$MEDIA_URL_TAGS${MEDIA_URL_TAGS:+$TAG_PREFIX}--tag server $URL\\"
+		else
+			echo "Error: $URL is not a valid WS or HTTP(s) url." >&2
+		fi
+	done
+	if [ -z "$RELAY_TAGS" ]; then
+		RELAY_TAGS=$(cat <<-_EOF
+				--tag r wss://nos.lol\\
+		        --tag r wss://nostr.mom\\
+		        --tag r wss://nostr.bitcoiner.social
+		_EOF
+		)
+	fi
+	if [ -z "$MEDIA_URL_TAGS" ]; then
+		MEDIA_URL_TAGS=$(cat <<-_EOF
+				--tag server https://nostr.build\\
+		        --tag server https://nostrcheck.me\\
+		        --tag server wss://void.cat
+		_EOF
+		)
+	fi
+	mkdir -p ".pubstr/events"
+	RELAYS_SH=".pubstr/events/relays.sh"
+	cat > "$RELAYS_SH" <<-_EOF
+		#!/bin/sh
+		
+		nostril --sec "\$1"\\
+		        --envelope\\
+		        --created-at \$(date +%s)\\
+		        --kind 10002\\
+		        $RELAY_TAGS
+		        --content ""
+	_EOF
+	MEDIA_SERVERS_SH=".pubstr/events/media_servers.sh"
+	cat > "$MEDIA_SERVERS_SH" <<-_EOF
+		#!/bin/sh
+		
+		nostril --sec "\$1"\\
+		        --envelope\\
+		        --created-at \$(date +%s)\\
+		        --kind 10096\\
+		        $MEDIA_URL_TAGS
+		        --content ""
+	_EOF
+	chmod +x "$RELAYS_SH" "$MEDIA_SERVERS_SH"
+	event "$RELAYS_SH" > /dev/null
+	event "$MEDIA_SERVERS_SH" > /dev/null
+	cat > "$CONFIG_DIR/config" <<-_EOF
+		# Hex formatted private (sec) and public (pub) keys for the account.
+		# It is recommended for the SEC key to be a command, such as a password
+		# manager that outputs the key, for example "pass show nostr/my_key".
+		# The command will be evaluated during runtime when needed.
+		SEC="$SEC_OR_CMD"
+		PUB="$PUB"
+	_EOF
+	PUB_PREFIX="$(echo "$PUB" | cut -c1-4)"
+	PUB_SUFFIX="$(echo "$PUB" | cut -c61-65)"
+	echo "Account for pubkey $PUB_PREFIX..$PUB_SUFFIX initialized in $CONFIG_DIR"
+}
+
+cmd_event() {
+	set_sec
+	if [ -z "$1" ] || [ "$1" = "-" ]; then
+		while read SH_FILE; do
+			event "$SH_FILE"
+		done
+	else
+		for SH_FILE; do
+			event "$SH_FILE"
+		done
+	fi
+}
+
+cmd_publish() {
+	if [ "$1" = "-t" ]; then
+		RELAYS=""
+		shift
+		for WS; do
+			if valid_ws_url "$WS"; then
+				RELAYS="$RELAYS $WS"
+				shift
+			else
+				break
+			fi
+		done
+	fi
+	local JSON_FILES=""
+	if [ -z "$1" ] || [ "$1" = "-" ]; then
+		while read JSON_FILE; do
+			JSON_FILES="$JSON_FILES $JSON_FILE"
+		done
+	else
+		JSON_FILES="$@"
+	fi
+	SEP=$'\n'
+	for WS in $RELAYS; do
+		if ! valid_ws_url "$WS"; then
+			echo "Error: $WS in RELAYS is not a valid ws url." >&2
+			continue
+		fi
+		DOMAIN="$(echo "$WS" | cut -d '/' -f 3)"
+		WS_FILE="$CONFIG_DIR/outbox/$DOMAIN"
+		EVENTS=""
+		EVENT_COUNT=0
+		FIRST=""
+		for JF in $JSON_FILES; do
+			if [ ! -f "$JF" ]; then
+				echo "Error: $JF does not exist." >&2
+				continue
+			fi
+			CONTENT="$(cat $JF)"
+			PK="$(echo "$CONTENT" | jq -r '.[1].pubkey')"
+			[ "$PUB" = "$PK" ] || "Error: Event in $JF had a different pubkey than $CONFIG_DIR/config."
+			ID="$(echo "$CONTENT" | jq -r '.[1].id')"
+			if ! ([ -f "$WS_FILE" ] && grep -q "$ID" "$WS_FILE"); then
+				EVENTS="$EVENTS${FIRST:+$SEP}$CONTENT"
+				EVENT_COUNT=$(($EVENT_COUNT + 1))
+				FIRST="y"
+			fi
+		done
+		if [ -n "$EVENTS" ]; then
+			RESPONSES=$(echo "$EVENTS" | websocat -n --max-messages-rev "$EVENT_COUNT" "$WS")
+			echo "$RESPONSES" | grep '["OK","[^"]*",true,' | tee -a "$WS_FILE" | sed "s/^/$DOMAIN: /"
+			echo "$RESPONSES" | grep -v '["OK","[^"]*",true,' | sed "s/^/$DOMAIN: /"
+		fi
+	done
+}
+
+cmd_upload() {
+	if [ "$1" = "-t" ]; then
+		MEDIA_SERVERS=""
+		shift
+		for SERVER; do
+			if valid_http_url "$SERVER"; then
+				MEDIA_SERVERS="$MEDIA_SERVERS $SERVER"
+				shift
+			else
+				break
+			fi
+		done
+	fi
+	if [ -z "$1" ] || [ "$1" = "-" ]; then
+		while read MEDIA_FILE; do
+			upload "$MEDIA_FILE"
+		done
+	else
+		for MEDIA_FILE; do
+			upload "$MEDIA_FILE"
+		done
+	fi
+}
+
+case "$1" in
+	init) shift; cmd_init "$@" ;;
+	event) shift; config; cmd_event "$@" ;;
+	publish) shift; config; cmd_publish "$@" ;;
+	upload) shift; config; cmd_upload "$@" ;;
+	help|-h|-help) cmd_usage ;;
+	*) cmd_usage ;;
+esac
+exit 0
