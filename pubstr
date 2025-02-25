@@ -24,7 +24,7 @@ config() {
 		CONFIG_DIR="$ROOT_DIR/.pubstr"
 	done
 	. "$CONFIG_DIR/config"
-	RELAYS="$(jq -r '.[1].tags | map(select(.[0] == "r")).[][1]' "$CONFIG_DIR/events/relays.json" 2> /dev/null)"
+	RELAYS="$(jq -r '.[1].tags | map(select(.[0] == "r")) | map(select(.[2] != "read")).[][1]' "$CONFIG_DIR/events/relays.json" 2> /dev/null)"
 	MEDIA_SERVERS="$(jq -r '.[1].tags | map(select(.[0] == "server")).[][1]' "$CONFIG_DIR/events/media_servers.json" 2> /dev/null)"
 }
 
@@ -190,7 +190,7 @@ cmd_init() {
 		RELAY_TAGS=$(cat <<-_EOF
 				--tag r wss://nos.lol\\
 		        --tag r wss://nostr.mom\\
-		        --tag r wss://nostr.bitcoiner.social
+		        --tag r wss://nostr.bitcoiner.social\\
 		_EOF
 		)
 	fi
@@ -198,7 +198,7 @@ cmd_init() {
 		MEDIA_URL_TAGS=$(cat <<-_EOF
 				--tag server https://nostr.build\\
 		        --tag server https://nostrcheck.me\\
-		        --tag server wss://void.cat
+		        --tag server https://void.cat\\
 		_EOF
 		)
 	fi
@@ -209,7 +209,6 @@ cmd_init() {
 		
 		nostril --sec "\$1"\\
 		        --envelope\\
-		        --created-at \$(date +%s)\\
 		        --kind 10002\\
 		        $RELAY_TAGS
 		        --content ""
@@ -220,7 +219,6 @@ cmd_init() {
 		
 		nostril --sec "\$1"\\
 		        --envelope\\
-		        --created-at \$(date +%s)\\
 		        --kind 10096\\
 		        $MEDIA_URL_TAGS
 		        --content ""
