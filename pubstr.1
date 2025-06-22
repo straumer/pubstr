@@ -23,6 +23,7 @@ directory it finds from its current directory and then up the directory tree, si
 .Nm git.
 .Sh COMMANDS
 .Nm init
+.Op -x host:port
 .Op hex-sec-key | command
 .Op servers...
 .Bd -filled -offset indent -compact
@@ -42,7 +43,11 @@ and
 .Nm upload
 commands respectively. If omitted, a popular
 .Pa server
-list is used. See the \fIFILES\fP section for modifying the produced configuration.
+list is used. See the \fIFILES\fP section for modifying the produced configuration. Use the
+.Nm -x
+option specifies a SOCKS5 proxy that
+.Nm pubstr
+will use for all network calls.
 .Ed
 .Pp
 .Nm event
@@ -59,6 +64,16 @@ with any
 suffix removed. This should be a Nostr EVENT message. If there are no
 .Pa executable-file
 arguments and optionally -, the files are instead read from standard input.
+.Ed
+.Pp
+.Nm meta
+.Op - | json-files...
+.Bd -filled -offset indent -compact
+Process each json event file
+.Pa file.json
+and generate a
+.Pa file.meta.json
+with additional JSON formatted metadata about the event, such as NIP-19 entities. If - is specified, the files are instead read from standard input.
 .Ed
 .Pp
 .Nm publish
@@ -192,6 +207,12 @@ Make Nostr event message
 .Bd -literal -offset indent -compact
 .Nm $ pubstr event my_event.sh
 my_event.json
+.Ed
+.Pp
+Make metadata file from Nostr event message
+.Bd -literal -offset indent -compact
+.Nm $ pubstr meta my_event.json
+my_event.meta.json
 .Ed
 .Pp
 Publish event to a local relay

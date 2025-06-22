@@ -44,6 +44,10 @@ valid_url() {
 	valid_ws_url "$1" || valid_http_url "$1"
 }
 
+valid_host() {
+	echo "$1" | grep -E -q '^[a-z0-9.-]+(:[0-9]{1,5})?'
+}
+
 set_sec() {
 	local LSEC="${1:-$SEC}"
 	if ! valid_hex_key "$LSEC"; then
@@ -100,7 +104,12 @@ upload() {
 			else
 				SERVER_CONFIG_URL="$SERVER/.well-known/nostr/nip96.json"
 			fi
-			API_URL="$(curl -s -S "$SERVER_CONFIG_URL" | jq -r '.api_url' | sed "/http\(s\|\):\/\/localhost\//s/http\(s\|\):\/\/localhost/http:\/\/$DOMAIN/")"
+			local FILTER="/http\(s\|\):\/\/localhost\//s/http\(s\|\):\/\/localhost/http:\/\/$DOMAIN/"
+			if [ -n "$SOCKS5" ] && ! echo "$SERVER_CONFIG_URL" | grep -q '://\(localhost\|127\.0\.0\.1\):'; then
+				API_URL="$(curl -x "socks5h://$SOCKS5" -s -S "$SERVER_CONFIG_URL" | jq -r '.api_url' | sed "$FILTER")"
+			else
+				API_URL="$(curl -s -S "$SERVER_CONFIG_URL" | jq -r '.api_url' | sed "$FILTER")"
+			fi
 			if valid_http_url "$API_URL"; then
 				echo "$API_URL" >> "$API_URLS_FILE"
 			else
@@ -124,7 +133,11 @@ upload() {
 		# Upload file to server's api_url, store response and show new url.
 		[ -z "$SEC_SET" ] && set_sec && SEC_SET="y"
 		AUTH="$(nostril --sec "$SEC" --kind 27235 --tag u "$API_URL" --tag method POST --tag payload "$SHA" | base64 -w 0)"
-		NEW_RESPONSE="$(curl -s -S -H "Authorization: Nostr $AUTH" -F file=@$1 -F no_transform=true "$API_URL")"
+		if [ -n "$SOCKS5" ] && ! echo "$API_URL" | grep -q '://\(localhost\|127\.0\.0\.1\):'; then
+			NEW_RESPONSE="$(curl -x "socks5h://$SOCKS5" -s -S -H "Authorization: Nostr $AUTH" -F file=@$1 -F no_transform=true "$API_URL")"
+		else
+			NEW_RESPONSE="$(curl -s -S -H "Authorization: Nostr $AUTH" -F file=@$1 -F no_transform=true "$API_URL")"
+		fi
 		STAT="$(echo "$NEW_RESPONSE" | jq -r '.status' 2> /dev/null)"
 		if [ "$STAT" = "success" ]; then
 			echo "$NEW_RESPONSE" >> "$SERVER_FILE"
@@ -135,6 +148,44 @@ upload() {
 	done
 }
 
+pmeta() {
+    PUB=$(nec -p npub "$(jq -r 'last.pubkey' "$1")")
+	PROFILE="$(nec -p nprofile "$(jq -Mcs '{
+		"public_key":.[0] | last.pubkey,
+		"relays":[.[1] | last.tags | map(select(.[0] == "r")) | map(select(.[2] != "read")).[][1]]
+	}' "$1" "$CONFIG_DIR/events/relays.json")")"
+	FILE="${F%.json}.meta.json"
+	echo "{\"npub\":\"$PUB\",\"nprofile\":\"$PROFILE\"}" > $FILE
+    echo $FILE
+}
+
+meta() {
+	NOTE=$(nec -p note "$(jq -r 'last.id' $1)")
+	EVENT="$(nec -p nevent "$(jq -Mcs '{
+		"event_id":.[0] | last.id,
+		"public_key":.[0] | last.pubkey,
+		"kind":.[0] | last.kind,
+		"relays":[.[1] | last.tags | map(select(.[0] == "r")) | map(select(.[2] != "read")).[][1]]
+	}' "$1" "$CONFIG_DIR/events/relays.json")")"
+	ADDR="$(nec -p naddr "$(jq -Mcs '{
+		"coordinate":{
+			"kind":.[0] | last.kind,
+			"public_key":.[0] | last.pubkey,
+			"identifier":.[0] | last.tags[] | select(.[0] == "d")[1]
+		},
+		"relays":[.[1] | last.tags | map(select(.[0] == "r")) | map(select(.[2] != "read")).[][1]]
+	}' "$1" "$CONFIG_DIR/events/relays.json")" 2> /dev/null)"
+	
+	FILE="${F%.json}.meta.json"
+	if [ -z "$ADDR" ]; then
+		echo "{\"note\":\"$NOTE\",\"nevent\":\"$EVENT\"}" > $FILE
+	else
+		echo "{\"note\":\"$NOTE\",\"nevent\":\"$EVENT\",\"naddr\":\"$ADDR\"}" > $FILE
+	fi
+	
+	echo $FILE
+}
+
 cmd_usage() {
 	cat <<-_EOF
 	===================================
@@ -142,10 +193,12 @@ cmd_usage() {
 	===================================
 
 	Usage:
-	    pubstr init [hex-sec-key | command] [servers...]
+	    pubstr init [-x host:port] [hex-sec-key | command] [servers...]
 	        Initializes pubstr for nostr account in the current directory.
 	    pubstr event [- | executable-files...]
 	        Generate EVENT messages in json-files by running corresponding executable-files.
+	    pubstr meta [- | json-files...]
+	        Generate files with additional metadata about the events in json-files.
 	    pubstr publish [-t ws-servers...] [- | json-files...]
 	        Send EVENT messages in json-files to default outbox relays or those specified
 	        by ws-servers if the -t flag is used.
@@ -160,6 +213,14 @@ cmd_usage() {
 cmd_init() {
 	if [ -d "$CONFIG_DIR" ]; then
 		die "Error: CONFIG_DIR $CONFIG_DIR already exists."
+	fi
+	if [ "$1" = "-x" ]; then
+		if valid_host "$2"; then
+			SOCKS5="$2"
+			shift 2
+		else
+			die "Error: $2 is not a valid host (example 127.0.0.1:9050)"
+		fi
 	fi
 	if [ -z "$1" ] || valid_url "$1"; then
 		NOUT="$(nostril --content "" 2>&1)"
@@ -208,7 +269,7 @@ cmd_init() {
 		#!/bin/sh
 		
 		nostril --sec "\$1"\\
-		        --envelope\\
+		        r-envelope\\
 		        --kind 10002\\
 		        $RELAY_TAGS
 		        --content ""
@@ -233,6 +294,9 @@ cmd_init() {
 		# The command will be evaluated during runtime when needed.
 		SEC="$SEC_OR_CMD"
 		PUB="$PUB"
+
+		# SOCKS5 proxy to with publish and upload commands.
+		SOCKS5="$SOCKS5"
 	_EOF
 	PUB_PREFIX="$(echo "$PUB" | cut -c1-4)"
 	PUB_SUFFIX="$(echo "$PUB" | cut -c61-65)"
@@ -300,7 +364,11 @@ cmd_publish() {
 			fi
 		done
 		if [ -n "$EVENTS" ]; then
-			RESPONSES=$(echo "$EVENTS" | websocat -n --max-messages-rev "$EVENT_COUNT" "$WS")
+			if [ -n "$SOCKS5" ] && ! echo "$WS" | grep -q '://\(localhost\|127\.0\.0\.1\):'; then
+				RESPONSES=$(echo "$EVENTS" | websocat --socks5 "$SOCKS5" --socks5-user-pass ':' -n --max-messages-rev "$EVENT_COUNT" "$WS")
+			else
+				RESPONSES=$(echo "$EVENTS" | websocat -n --max-messages-rev "$EVENT_COUNT" "$WS")
+			fi
 			echo "$RESPONSES" | grep '["OK","[^"]*",true,' | tee -a "$WS_FILE" | sed "s/^/$DOMAIN: /"
 			echo "$RESPONSES" | grep -v '["OK","[^"]*",true,' | sed "s/^/$DOMAIN: /"
 		fi
@@ -331,9 +399,27 @@ cmd_upload() {
 	fi
 }
 
+cmd_meta() {
+    FN="meta"
+    if [ "$1" = "-p" ]; then
+        FN="pmeta"
+        shift
+    fi
+	if [ -z "$1" ] || [ "$1" = "-" ]; then
+		while read F; do
+			$FN "$F"
+		done
+	else
+		for F; do
+			$FN "$F"
+		done
+	fi
+}
+
 case "$1" in
 	init) shift; cmd_init "$@" ;;
 	event) shift; config; cmd_event "$@" ;;
+    meta) shift; config; cmd_meta "$@" ;;
 	publish) shift; config; cmd_publish "$@" ;;
 	upload) shift; config; cmd_upload "$@" ;;
 	help|-h|-help) cmd_usage ;;
