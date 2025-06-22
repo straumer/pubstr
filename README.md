@@ -8,12 +8,12 @@ It should be POSIX compliant aside for these required tools:
 
 - curl
 - jq
-- [nostril](https://github.com/jb55/nostril)
 - websocat
+- [nostril](https://github.com/jb55/nostril)
+- [nec](https://github.com/straumer/nec)
 
 Optional, but complementary tools:
 
-- [key-convertr](https://github.com/rot13maxi/key-convertr) to conveniently convert a Nostr `nsec` key to its needed hex-encoded private key.
 - [pass](https://www.passwordstore.org/) to keep the private key encrypted at rest.
 
 ## Installation
@@ -26,7 +26,7 @@ make install
 
 Assuming you have an `nsec` key for your Nostr account and want to use `pass` to keep it encrypted at rest. Run:
 ```
-key-convertr --to-hex <your-nsec>
+nec <your-nsec>
 pass insert nostr/yourkey # Paste the resulting key at the prompt
 ```
 
