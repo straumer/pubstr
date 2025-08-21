@@ -269,7 +269,7 @@ cmd_init() {
 		#!/bin/sh
 		
 		nostril --sec "\$1"\\
-		        r-envelope\\
+		        --envelope\\
 		        --kind 10002\\
 		        $RELAY_TAGS
 		        --content ""
